@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>layout-canvas</title>
+<style>
+  html, body { margin: 0; padding: 0; }
+  body { font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+  #wrap { display: inline-block; }
+  #cv {
+    display: block;
+    border: 2px solid #d8d8d8;
+    background: #fff;
+    cursor: default;
+    touch-action: none;
+    outline: none;
+  }
+  #cv.grabbing { cursor: grabbing; }
+  #status {
+    font-size: 12px;
+    color: #666;
+    padding: 6px 2px;
+    min-height: 18px;
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="cv" tabindex="0"></canvas>
+  <div id="status">点击素材选中 · 拖动移动 · 滚轮缩放 · Delete 删除 · R 旋转 15° </div>
+</div>
+<script>
+(function () {
+  // ---------- Streamlit 桥 ----------
+  function send(type, data) {
+    window.parent.postMessage(
+      Object.assign({ isStreamlitMessage: true, type: type }, data || {}),
+      "*"
+    );
+  }
+  send("streamlit:componentReady", { apiVersion: 1 });
+
+  // ---------- 状态 ----------
+  let W = 600, H = 849;
+  let A4 = [2480, 3508];
+  let layout = [];
+  let dataUrls = [];
+  let imgCache = {};        // src_idx -> HTMLImageElement
+  let selected = -1;
+  let dragOffset = null;    // {dx, dy} 鼠标到中心的相对偏移
+  let lastSyncedJSON = "";  // 最近一次（来自上游或自己发）双方一致的 layout JSON
+  let emitTimer = null;
+
+  const cv = document.getElementById("cv");
+  const ctx = cv.getContext("2d");
+  const statusEl = document.getElementById("status");
+
+  function setStatus(msg) { statusEl.textContent = msg; }
+
+  function loadImg(idx) {
+    if (imgCache[idx]) return Promise.resolve(imgCache[idx]);
+    if (!dataUrls[idx]) return Promise.resolve(null);
+    return new Promise(function (resolve) {
+      const im = new Image();
+      im.onload = function () { imgCache[idx] = im; resolve(im); };
+      im.onerror = function () { resolve(null); };
+      im.src = dataUrls[idx];
+    });
+  }
+
+  async function ensureLoaded() {
+    const indices = Array.from(new Set(layout.map(function (it) { return it.src_idx; })));
+    await Promise.all(indices.map(loadImg));
+  }
+
+  function itemBox(it) {
+    const im = imgCache[it.src_idx];
+    if (!im) return null;
+    const baseScale = W / A4[0]; // 与 Python 端 render() 公式保持一致
+    const w = im.width * it.scale * baseScale;
+    const h = im.height * it.scale * baseScale;
+    return {
+      w: w, h: h,
+      cx: it.cx * W,
+      cy: it.cy * H,
+      angle: ((it.angle || 0) * Math.PI) / 180
+    };
+  }
+
+  function draw() {
+    cv.width = W;
+    cv.height = H;
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, W, H);
+    for (let j = 0; j < layout.length; j++) {
+      const it = layout[j];
+      const im = imgCache[it.src_idx];
+      const box = itemBox(it);
+      if (!im || !box) continue;
+      ctx.save();
+      ctx.translate(box.cx, box.cy);
+      ctx.rotate(box.angle);
+      ctx.drawImage(im, -box.w / 2, -box.h / 2, box.w, box.h);
+      if (j === selected) {
+        ctx.strokeStyle = "#1976d2";
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 4]);
+        ctx.strokeRect(-box.w / 2 - 2, -box.h / 2 - 2, box.w + 4, box.h + 4);
+      }
+      ctx.restore();
+    }
+  }
+
+  function hitTest(x, y) {
+    // 后绘制的在上层 → 反向遍历
+    for (let j = layout.length - 1; j >= 0; j--) {
+      const box = itemBox(layout[j]);
+      if (!box) continue;
+      const dx = x - box.cx, dy = y - box.cy;
+      const a = -box.angle;
+      const lx = dx * Math.cos(a) - dy * Math.sin(a);
+      const ly = dx * Math.sin(a) + dy * Math.cos(a);
+      if (Math.abs(lx) <= box.w / 2 && Math.abs(ly) <= box.h / 2) return j;
+    }
+    return -1;
+  }
+
+  function pos(e) {
+    const r = cv.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
+  }
+
+  // ---------- 鼠标 ----------
+  cv.addEventListener("mousedown", function (e) {
+    e.preventDefault();
+    cv.focus();
+    const p = pos(e);
+    const j = hitTest(p.x, p.y);
+    selected = j;
+    if (j >= 0) {
+      const it = layout[j];
+      dragOffset = { dx: p.x - it.cx * W, dy: p.y - it.cy * H };
+      cv.classList.add("grabbing");
+      setStatus("已选中 #" + j + " (素材" + it.src_idx + ") · 拖动 / 滚轮 / R / [ ] / Delete");
+    } else {
+      dragOffset = null;
+      cv.classList.remove("grabbing");
+      setStatus("点击素材选中");
+    }
+    draw();
+  });
+
+  window.addEventListener("mousemove", function (e) {
+    if (!dragOffset || selected < 0) return;
+    const p = pos(e);
+    const it = layout[selected];
+    it.cx = Math.max(0, Math.min(1, (p.x - dragOffset.dx) / W));
+    it.cy = Math.max(0, Math.min(1, (p.y - dragOffset.dy) / H));
+    draw();
+    scheduleEmit();
+  });
+
+  window.addEventListener("mouseup", function () {
+    if (dragOffset) {
+      dragOffset = null;
+      cv.classList.remove("grabbing");
+      emit(); // drop 立刻同步
+    }
+  });
+
+  cv.addEventListener("wheel", function (e) {
+    if (selected < 0) return;
+    e.preventDefault();
+    const factor = e.deltaY < 0 ? 1.06 : 0.94;
+    const it = layout[selected];
+    it.scale = Math.max(0.05, Math.min(3, it.scale * factor));
+    draw();
+    setStatus("已选中 #" + selected + " (素材" + it.src_idx + ") · ×" + it.scale.toFixed(2));
+    scheduleEmit();
+  }, { passive: false });
+
+  cv.addEventListener("contextmenu", function (e) { e.preventDefault(); });
+
+  // ---------- 键盘 ----------
+  cv.addEventListener("keydown", function (e) {
+    if (selected < 0) return;
+    const k = e.key;
+    if (k === "Delete" || k === "Backspace") {
+      e.preventDefault();
+      layout.splice(selected, 1);
+      selected = -1;
+      draw(); emit();
+    } else if (k === "r" || k === "R") {
+      e.preventDefault();
+      layout[selected].angle = ((layout[selected].angle || 0) + 15) % 360;
+      draw(); emit();
+    } else if (k === "[") {
+      e.preventDefault();
+      if (selected > 0) {
+        const t = layout[selected - 1];
+        layout[selected - 1] = layout[selected];
+        layout[selected] = t;
+        selected -= 1;
+        draw(); emit();
+      }
+    } else if (k === "]") {
+      e.preventDefault();
+      if (selected < layout.length - 1) {
+        const t = layout[selected + 1];
+        layout[selected + 1] = layout[selected];
+        layout[selected] = t;
+        selected += 1;
+        draw(); emit();
+      }
+    } else if (k === "Escape") {
+      selected = -1;
+      draw();
+      setStatus("已取消选中");
+    }
+  });
+
+  // ---------- 同步 ----------
+  function scheduleEmit() {
+    if (emitTimer) clearTimeout(emitTimer);
+    emitTimer = setTimeout(emit, 200);
+  }
+  function emit() {
+    if (emitTimer) { clearTimeout(emitTimer); emitTimer = null; }
+    const j = JSON.stringify(layout);
+    if (j === lastSyncedJSON) return; // 没真改动就不发
+    lastSyncedJSON = j;
+    send("streamlit:setComponentValue", {
+      value: { layout: layout, ts: Date.now() },
+      dataType: "json"
+    });
+  }
+
+  // ---------- 接收 props ----------
+  window.addEventListener("message", async function (event) {
+    const d = event.data;
+    if (!d || d.type !== "streamlit:render") return;
+    const args = d.args || {};
+    W = args.width || W;
+    H = args.height || H;
+    A4 = args.a4_px || A4;
+    dataUrls = args.cutouts_data_urls || [];
+    const incomingJSON = JSON.stringify(args.layout || []);
+    if (incomingJSON !== lastSyncedJSON) {
+      // 上游真的变了（比如 ➕ / 清空）→ 采纳
+      layout = JSON.parse(incomingJSON);
+      lastSyncedJSON = incomingJSON;
+      if (selected >= layout.length) selected = -1;
+    }
+    await ensureLoaded();
+    draw();
+    send("streamlit:setFrameHeight", { height: H + 36 });
+  });
+})();
+</script>
+</body>
+</html>
