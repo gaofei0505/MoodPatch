@@ -61,6 +61,7 @@ result = _canvas(
     processed_images=st.session_state.processed,
     default=None,
     key="moodpatch_canvas",
+    height=2600,
 )
 
 if isinstance(result, dict) and result.get("action") == "remove_bg":

@@ -1111,6 +1111,8 @@ document.addEventListener('keydown', (e) => {
 // STREAMLIT COMPONENT BRIDGE (optional)
 // ════════════════════════════════════════════════════════
 sendToStreamlit('streamlit:componentReady', { apiVersion: 1 });
+// 发一次固定高度，之后不再触发循环
+sendToStreamlit('streamlit:setFrameHeight', { height: 2600 });
 
 // Receive rembg-processed images from Python
 window.addEventListener('message', (event) => {
@@ -1139,8 +1141,6 @@ window.addEventListener('message', (event) => {
   });
 
   if (updated) renderMaterials();
-
-  sendToStreamlit('streamlit:setFrameHeight', { height: document.body.scrollHeight });
 });
 </script>
 </body>
