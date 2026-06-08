@@ -1,26 +1,12 @@
-# Streamlit Cloud 部署配置
 [server]
-# Cloud 由平台负责终止 TLS，应用本身不需要 headless 之类的
-maxUploadSize = 50          # MB；手账素材一般几张几兆，50 足够
-# XSRF 保护开启 → 必须允许 CORS（Streamlit 内部用 cookie 校验），
-# 所以这里不要再显式关 enableCORS，否则启动时会报警告并被强制改回。
+maxUploadSize = 50
 enableXsrfProtection = true
 
 [browser]
 gatherUsageStats = false
 
-[theme]
-# 走品牌色，轻拼贴风
-base = "light"
-primaryColor = "#1976d2"
-backgroundColor = "#FFFFFF"
-secondaryBackgroundColor = "#F4F6FA"
-textColor = "#202124"
-font = "sans serif"
-
 [runner]
-# 文件改动自动重跑，本地开发友好；Cloud 上无副作用
 fastReruns = true
 
 [logger]
-level = "info"
+level = "warning"

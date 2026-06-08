@@ -1,14 +1,6 @@
-# AI 手账 Demo · 部署到 Streamlit Cloud 用
-# 版本基于本地 myvenv 已验证的组合，保留小写 == pin 的同时给小补丁以宽容
-streamlit==1.57.0
+streamlit>=1.28.0
 rembg==2.0.69
 onnxruntime==1.23.2
-Pillow==12.1.1
-numpy==2.2.6
-
-# rembg 的运行依赖通常 pip 自动装；这里点出来让 Cloud 解析更稳：
-opencv-python-headless==4.13.0.92
-pymatting==1.1.15
-scikit-image==0.25.2
-numba==0.65.1
-llvmlite==0.47.0
+Pillow>=10.0.0
+numpy>=1.24.0
+opencv-python-headless>=4.8.0
